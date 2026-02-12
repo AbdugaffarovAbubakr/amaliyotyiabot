@@ -1,0 +1,21 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Runtime data (sensitive / changing)
+data/users.json
+data/logs.txt
