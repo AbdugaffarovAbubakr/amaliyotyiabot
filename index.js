@@ -45,6 +45,7 @@ const ALLOWED_BUTTON_KEYS = [
 
 const ACTIVE_DAYS = 30;
 const BROADCAST_DELAY_MS = 40;
+const MAX_STATS_MESSAGE = 3500;
 
 const DEFAULT_I18N = {
   uz: {
@@ -73,6 +74,9 @@ const DEFAULT_I18N = {
     stats_total: "Jami foydalanuvchilar: {count}",
     stats_active: "Aktiv foydalanuvchilar (30 kun): {count}",
     stats_lang: "Tillar bo‘yicha: {list}",
+    stats_users_title: "Foydalanuvchilar ro‘yxati:",
+    stats_users_header:
+      "ID | Ism | Username | Til | Rol | Oxirgi faollik | Blok",
     add_admin_usage: "/add_admin user_id yoki foydalanuvchi xabariga reply qiling.",
     add_admin_done: "Admin tayinlandi: {id}",
     remove_admin_done: "Admin o‘chirildi: {id}",
@@ -161,6 +165,9 @@ const DEFAULT_I18N = {
     stats_total: "Всего пользователей: {count}",
     stats_active: "Активные пользователи (30 дней): {count}",
     stats_lang: "По языкам: {list}",
+    stats_users_title: "Список пользователей:",
+    stats_users_header:
+      "ID | Имя | Username | Язык | Роль | Последняя активность | Блок",
     add_admin_usage: "/add_admin user_id или ответьте на сообщение пользователя.",
     add_admin_done: "Админ назначен: {id}",
     remove_admin_done: "Админ удален: {id}",
@@ -247,6 +254,9 @@ const DEFAULT_I18N = {
     stats_total: "Total users: {count}",
     stats_active: "Active users (30 days): {count}",
     stats_lang: "By languages: {list}",
+    stats_users_title: "Users list:",
+    stats_users_header:
+      "ID | Name | Username | Language | Role | Last active | Blocked",
     add_admin_usage: "/add_admin user_id or reply to a user message.",
     add_admin_done: "Admin assigned: {id}",
     remove_admin_done: "Admin removed: {id}",
@@ -333,6 +343,9 @@ const DEFAULT_I18N = {
     stats_total: "Jami paydalanıwshılar: {count}",
     stats_active: "Aktiv paydalanıwshılar (30 kún): {count}",
     stats_lang: "Tiller boyınsha: {list}",
+    stats_users_title: "Paydalanıwshılar tizimi:",
+    stats_users_header:
+      "ID | Atı | Username | Til | Rol | Aqırǵı aktivlik | Blok",
     add_admin_usage:
       "/add_admin user_id yamasa paydalanıwshı xabarına reply qılıń.",
     add_admin_done: "Admin tayınlandı: {id}",
@@ -530,6 +543,7 @@ function upsertUser(ctx) {
   const key = normalizeUserId(ctx.from.id);
   const existing = users[key] || {};
   const fullname = buildFullName(ctx.from);
+  const username = ctx.from.username || existing.username || "";
   const language = existing.language || existing.lang || "uz";
   const role =
     existing.role || (SUPER_ADMINS.has(key) ? "super_admin" : "user");
@@ -537,6 +551,7 @@ function upsertUser(ctx) {
     ...existing,
     user_id: Number(key),
     fullname: fullname || existing.fullname || "",
+    username,
     language,
     role,
     last_active: new Date().toISOString(),
@@ -859,6 +874,60 @@ function buildStatsMessage(lang) {
   ].join("\n");
 }
 
+function buildUsersReport(lang) {
+  const t = i18n[lang];
+  const users = loadUsers();
+  const entries = Object.values(users);
+  const sorted = entries.sort((a, b) => {
+    const aTime = Date.parse(a.last_active || 0) || 0;
+    const bTime = Date.parse(b.last_active || 0) || 0;
+    return bTime - aTime;
+  });
+  const lines = [t.stats_users_title, t.stats_users_header];
+  for (const item of sorted) {
+    const id = item.user_id ?? "";
+    const name = item.fullname || "";
+    const usernameRaw = item.username || "";
+    const username =
+      usernameRaw && !String(usernameRaw).startsWith("@")
+        ? `@${usernameRaw}`
+        : usernameRaw;
+    const language = item.language || item.lang || "";
+    const role = item.role || "user";
+    const lastActive = item.last_active || "";
+    const blocked = item.blocked ? "yes" : "no";
+    lines.push(
+      [id, name, username, language, role, lastActive, blocked].join(" | "),
+    );
+  }
+  return lines.join("\n");
+}
+
+async function sendStats(ctx, lang, keyboard) {
+  const summary = buildStatsMessage(lang);
+  const report = buildUsersReport(lang);
+  const combined = `${summary}\n\n${report}`;
+
+  if (combined.length <= MAX_STATS_MESSAGE) {
+    if (ctx.updateType === "callback_query") {
+      return editOrReply(ctx, combined, keyboard);
+    }
+    return ctx.reply(combined, keyboard);
+  }
+
+  if (ctx.updateType === "callback_query") {
+    await editOrReply(ctx, summary, keyboard);
+  } else {
+    await ctx.reply(summary, keyboard);
+  }
+
+  const buffer = Buffer.from(report, "utf8");
+  return ctx.replyWithDocument({
+    source: buffer,
+    filename: "users.txt",
+  });
+}
+
 async function editOrReply(ctx, text, keyboard) {
   if (ctx.updateType === "callback_query") {
     try {
@@ -1119,8 +1188,7 @@ bot.command("stats", (ctx) => {
   if (!isSuperAdmin(user)) {
     return ctx.reply(t.super_admin_only, menuFor(ctx, lang));
   }
-  const message = buildStatsMessage(lang);
-  return ctx.reply(message, menuFor(ctx, lang));
+  return sendStats(ctx, lang, menuFor(ctx, lang));
 });
 
 bot.command("update_content", (ctx) => {
@@ -1269,14 +1337,10 @@ bot.on("callback_query", async (ctx) => {
   }
 
   if (action === "stats") {
-    const statsMessage = buildStatsMessage(lang);
-    return editOrReply(
-      ctx,
-      statsMessage,
-      Markup.inlineKeyboard([
-        [Markup.button.callback(t.admin_panel_back, "admin:main")],
-      ]),
-    );
+    const backKeyboard = Markup.inlineKeyboard([
+      [Markup.button.callback(t.admin_panel_back, "admin:main")],
+    ]);
+    return sendStats(ctx, lang, backKeyboard);
   }
 
   if (action === "broadcast") {
@@ -1690,4 +1754,3 @@ console.log("Bot is running...");
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
-
