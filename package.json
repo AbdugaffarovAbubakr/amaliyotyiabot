@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Yoshlar ishlari agentligi — Amaliyot Bot",
   "main": "index.js",
-  "scripts": {
+  "scripts": {    
     "start": "node index.js"
   },
   "dependencies": {
